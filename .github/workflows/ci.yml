@@ -1,11 +1,14 @@
 
-name: CloudTasks CI
+name: CloudTasks CI/CD
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -26,3 +29,44 @@ jobs:
 
       - name: Build React application
         run: npm run build
+
+      - name: Upload production build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudtasks-dist
+          path: dist/
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download production build
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudtasks-dist
+          path: dist/
+
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" | tr -d '\r' > ~/.ssh/cloudtasks.pem
+          chmod 600 ~/.ssh/cloudtasks.pem
+          ssh-keygen -y -f ~/.ssh/cloudtasks.pem > /dev/null
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/cloudtasks.pem -o IdentitiesOnly=yes" \
+            dist/ "$EC2_USER@$EC2_HOST:/var/www/cloudtasks/"
